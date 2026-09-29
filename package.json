@@ -1,0 +1,61 @@
+{
+  "name": "gitpilot",
+  "productName": "GitPilot",
+  "version": "1.0.0",
+  "description": "Cliente Git de escritorio para macOS con perfiles de cuenta, grafo y Gitflow",
+  "main": "src/main/main.js",
+  "author": "Brayam Andrey Oliveros Rivera",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env GITPILOT_DEV=1 electron .\"",
+    "dev:web": "concurrently -k \"vite\" \"node src/main/web-bridge.js\"",
+    "build:ui": "vite build",
+    "start": "npm run build:ui && electron .",
+    "test": "node test/backend.test.js && node test/graph.test.mjs && node test/auth.test.js",
+    "dist": "npm run build:ui && electron-builder --mac",
+    "dist:dir": "npm run build:ui && electron-builder --mac --dir"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11",
+    "wait-on": "^8.0.1",
+    "ws": "^8.18.0"
+  },
+  "build": {
+    "appId": "co.oliveros.gitpilot",
+    "productName": "GitPilot",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/main/**",
+      "src/preload/**",
+      "dist/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "hardenedRuntime": false,
+      "identity": null
+    },
+    "afterPack": "build/afterPack.js"
+  }
+}
