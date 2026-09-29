@@ -134,7 +134,7 @@ export function UIProvider({ children }) {
   const toast = useCallback((msg, kind = 'info', ms) => {
     const id = idRef.current++;
     setToasts((t) => [...t, { id, msg, kind }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), ms || (kind === 'error' ? 9000 : 3800));
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), ms || (kind === 'error' ? 15000 : 3800));
   }, []);
 
   const ui = useMemo(() => ({

@@ -34,7 +34,7 @@ wss.on('connection', (ws) => {
       const data = await fn(...(msg.args || []));
       ws.send(JSON.stringify({ id: msg.id, ok: true, data: data === undefined ? null : data }));
     } catch (e) {
-      ws.send(JSON.stringify({ id: msg.id, ok: false, error: e.message || String(e) }));
+      ws.send(JSON.stringify({ id: msg.id, ok: false, error: e.message || String(e), dirty: !!e.dirty }));
     }
   });
 });

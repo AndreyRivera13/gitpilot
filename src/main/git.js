@@ -76,6 +76,7 @@ function createGit({ getAuthEnv = async () => ({}), getSettings = () => ({}) } =
     ]);
     const s = P.parseStatus(text);
     s.state = state;
+    s.autostash = fs.existsSync(path.join(await gitDir(repo), 'MERGE_AUTOSTASH'));
     return s;
   }
 
@@ -267,16 +268,41 @@ function createGit({ getAuthEnv = async () => ({}), getSettings = () => ({}) } =
     else await g(repo, ['branch', name, ...(from ? [from] : [])]);
   }
 
-  async function checkout(repo, target, { remote } = {}) {
+  async function checkout(repo, target, { remote, autostash } = {}) {
+    if (autostash) {
+      // guarda lo local, cambia de rama y lo restaura; si al restaurar hay conflictos, el stash se conserva
+      const before = (await out(repo, ['stash', 'list'])).split('\n').filter(Boolean).length;
+      await g(repo, ['stash', 'push', '-u', '-m', 'GitPilot: auto-stash antes de cambiar de rama']);
+      const after = (await out(repo, ['stash', 'list'])).split('\n').filter(Boolean).length;
+      const stashed = after > before;
+      try { await checkout(repo, target, { remote }); }
+      catch (e) {
+        if (stashed) await g(repo, ['stash', 'pop'], { allowFail: true });
+        throw e;
+      }
+      if (stashed) {
+        const r = await g(repo, ['stash', 'pop'], { allowFail: true });
+        if (r.code !== 0) return { ok: true, autostashConflict: true, message: 'Tus cambios siguen guardados en el stash (no se pudieron aplicar sin conflictos).' };
+      }
+      return { ok: true };
+    }
     if (remote) {
       // origin/feature -> crea local 'feature' con seguimiento
       const local = target.slice(target.indexOf('/') + 1);
       const exists = (await g(repo, ['show-ref', '--verify', '-q', `refs/heads/${local}`], { allowFail: true, silent: true })).code === 0;
-      if (exists) await g(repo, ['checkout', local]);
-      else await g(repo, ['checkout', '-b', local, '--track', target]);
-      return;
+      if (exists) await g(repo, ['checkout', local], { allowFail: true }).then((r) => checkoutFail(r));
+      else await g(repo, ['checkout', '-b', local, '--track', target], { allowFail: true }).then((r) => checkoutFail(r));
+      return { ok: true };
     }
-    await g(repo, ['checkout', target]);
+    checkoutFail(await g(repo, ['checkout', target], { allowFail: true }));
+    return { ok: true };
+  }
+
+  function checkoutFail(r) {
+    if (r.code === 0) return;
+    const text = (r.stderr || r.stdout || '').trim();
+    if (isDirtyErr(text)) { const e = new GitError(text || 'Cambios locales en conflicto.', { code: r.code }); e.dirty = true; throw e; }
+    throw new GitError(text || 'La operación falló.', { code: r.code });
   }
 
   async function checkoutDetached(repo, sha) { await g(repo, ['checkout', '--detach', sha]); }
@@ -294,8 +320,9 @@ function createGit({ getAuthEnv = async () => ({}), getSettings = () => ({}) } =
     else await g(repo, ['branch', '--unset-upstream', branch]);
   }
 
-  async function merge(repo, branch, { noFf, ffOnly, squash, message } = {}) {
+  async function merge(repo, branch, { noFf, ffOnly, squash, message, autostash } = {}) {
     const args = ['merge'];
+    if (autostash) args.push('--autostash');
     if (noFf) args.push('--no-ff');
     if (ffOnly) args.push('--ff-only');
     if (squash) args.push('--squash');
@@ -305,17 +332,29 @@ function createGit({ getAuthEnv = async () => ({}), getSettings = () => ({}) } =
     return mergeResult(repo, r);
   }
 
+  // Errores de git que significan "tus cambios locales estorban": no se ha tocado nada.
+  const DIRTY_RE = /(local changes to the following files would be overwritten|Please commit your changes or stash them|cannot (pull|rebase|merge|checkout).*(unstaged|uncommitted)|You have unstaged changes|Your index contains uncommitted changes|would be overwritten by (merge|checkout))/i;
+  const isDirtyErr = (t) => !/untracked working tree/i.test(t) && DIRTY_RE.test(t);
+  const AUTOSTASH_CONFLICT_RE = /(Applying autostash resulted in conflicts|safe in the stash|Your changes are safe|Cannot apply the autostash|stash entry is kept)/i;
+
   async function mergeResult(repo, r) {
-    const conflicts = (await status(repo)).conflicts;
+    const st = await status(repo);
+    const conflicts = st.conflicts;
+    const text = `${r.stderr || ''}\n${r.stdout || ''}`;
     if (r.code !== 0) {
-      if (conflicts.length) return { ok: false, conflicts: conflicts.length, message: 'Hay conflictos que resolver.' };
+      if (conflicts.length) return { ok: false, conflicts: conflicts.length, stashed: st.autostash, message: 'Hay conflictos que resolver.' };
+      if (isDirtyErr(text)) {
+        return { ok: false, dirty: true, message: (r.stderr || r.stdout).trim() };
+      }
       throw new GitError((r.stderr || r.stdout).trim() || 'La operación falló.', { code: r.code });
     }
-    return { ok: true, message: (r.stdout || '').trim() };
+    const res = { ok: true, message: (r.stdout || '').trim() };
+    if (AUTOSTASH_CONFLICT_RE.test(text)) res.autostashConflict = true;
+    return res;
   }
 
-  async function rebase(repo, onto) {
-    const r = await g(repo, ['rebase', onto], { allowFail: true });
+  async function rebase(repo, onto, { autostash } = {}) {
+    const r = await g(repo, ['rebase', ...(autostash ? ['--autostash'] : []), onto], { allowFail: true });
     return mergeResult(repo, r);
   }
 

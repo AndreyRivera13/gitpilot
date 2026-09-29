@@ -23,10 +23,13 @@ export default function WorkingCopy({ repo, status, identity, profile, selected,
   const [pushAfter, setPushAfter] = useState(false);
   const [noVerify, setNoVerify] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
   const subjRef = useRef(null);
   const state = status.state;
   const nConf = status.conflicts.length;
-  const canCommit = (status.staged.length > 0 || amend) && subject.trim() && nConf === 0 && !busy;
+  const nothingStaged = status.staged.length === 0 && !amend;
+  const canStageAll = nothingStaged && status.unstaged.length > 0; // "preparar todo y commit"
+  const canCommit = (status.staged.length > 0 || amend || canStageAll) && subject.trim() && nConf === 0 && !busy;
 
   useEffect(() => {
     if (!amend) return;
@@ -39,10 +42,11 @@ export default function WorkingCopy({ repo, status, identity, profile, selected,
 
   const doCommit = async () => {
     if (!canCommit) return;
-    setBusy(true);
-    const ok = await actions.commit({ message: subject, body, amend, noVerify, push: pushAfter });
+    setBusy(true); setErr('');
+    const r = await actions.commit({ message: subject, body, amend, noVerify, push: pushAfter, stageAll: canStageAll });
     setBusy(false);
-    if (ok) { setSubject(''); setBody(''); setAmend(false); }
+    if (r && r.ok) { setSubject(''); setBody(''); setAmend(false); }
+    else setErr((r && r.error) || 'No se pudo crear el commit.');
   };
 
   const mergeMsgHint = state === 'merge' ? 'Se usará el mensaje de merge por defecto.' : '';
@@ -134,9 +138,19 @@ export default function WorkingCopy({ repo, status, identity, profile, selected,
           <span className="spacer" />
           <span className={subject.length > 72 ? 'del' : 'faint'}>{subject.length}/72</span>
         </div>
+        {err && (
+          <div className="banner" style={{ borderColor: 'var(--red)', margin: 0, userSelect: 'text' }}>
+            <b style={{ color: 'var(--red)' }}>El commit falló</b>
+            <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: 11.5, maxHeight: 140, overflow: 'auto' }}>{err}</pre>
+            <div className="row"><button className="btn sm" onClick={() => setErr('')}>Cerrar</button>
+              {!noVerify && /hook|husky|lint/i.test(err) && <button className="btn sm" onClick={() => { setNoVerify(true); setErr(''); }}>Reintentar sin hooks (--no-verify)</button>}</div>
+          </div>
+        )}
+        {status.autostash && <div className="faint" style={{ fontSize: 11.5 }}>Tus cambios locales previos están guardados a salvo por el merge en curso; se restauran solos al completarlo o abortarlo.</div>}
         <button className="btn primary" disabled={!canCommit && !(state === 'merge' && nConf === 0)} onClick={() => (state === 'merge' && !subject.trim() ? actions.opContinue() : doCommit())}>
-          {amend ? 'Enmendar commit' : state === 'merge' ? 'Completar merge' : `Commit (${status.staged.length})`} <span className="kbd">⌘↵</span>
+          {amend ? 'Enmendar commit' : state === 'merge' && !subject.trim() ? 'Completar merge' : canStageAll ? `Preparar todo y commit (${status.unstaged.length})` : `Commit (${status.staged.length})`} <span className="kbd">⌘↵</span>
         </button>
+        {nothingStaged && !canStageAll && nConf === 0 && !state && <div className="faint" style={{ fontSize: 11 }}>No hay cambios para confirmar.</div>}
         {mergeMsgHint && <div className="faint" style={{ fontSize: 11 }}>{mergeMsgHint}</div>}
       </div>
     </>

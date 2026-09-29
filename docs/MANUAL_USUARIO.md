@@ -78,11 +78,12 @@ En *Perfiles → Usar como identidad global* se cambia `git config --global user
 ## 5. Trabajo diario
 
 ### Ver el estado y hacer commit
-1. Selecciona la fila **"Cambios locales"** arriba del grafo (se selecciona sola si hay cambios).
+1. Pulsa **✔ Commit** en la barra superior (o la fila **"Cambios locales"** arriba del grafo). También aparece un aviso con botón cuando estás mirando otro commit y tienes cambios pendientes. Tras un merge, pull, rebase o cherry-pick, GitPilot te lleva solo a esta vista.
 2. Los archivos aparecen en **Sin preparar**. Usa **＋** por archivo o **Preparar todo**. Con **−** los quitas de *Preparados*.
 3. Haz clic en un archivo para ver su **diff**.
 4. Escribe el resumen (ideal ≤ 72 caracteres) y opcionalmente una descripción.
-5. **Commit** o `⌘↵`.
+5. **Commit** o `⌘↵`. Si no preparaste nada, el botón cambia a **Preparar todo y commit (N)** y lo hace en un paso.
+6. Si el commit falla (hook de pre-commit, firma GPG, identidad…), el motivo queda **visible en el formulario** hasta que lo cierres; con hooks puedes reintentar con `--no-verify`.
 
 Opciones al pie del formulario:
 - **Enmendar último** (`--amend`): reabre el mensaje del último commit. Si ya lo habías publicado, tendrás que hacer push forzado.
@@ -105,7 +106,7 @@ Botón ↩ por archivo (o ↩ para todo). Siempre pide confirmación: **no se pu
 | Botón | Qué hace |
 |---|---|
 | **Fetch** (`⇧⌘F`) | Trae novedades de todos los remotos (`--all --prune --tags`). |
-| **Pull** (`⇧⌘L`) | Trae e integra. La flechita ▾ permite elegir **merge**, **rebase** o **solo fast-forward**. Usa autostash. El número naranja indica cuántos commits vas atrás. |
+| **Pull** (`⇧⌘L`) | Trae e integra. La flechita ▾ permite elegir **merge**, **rebase** o **solo fast-forward**. Si tus cambios locales chocan, te pregunta antes de guardarlos en stash. El número naranja indica cuántos commits vas atrás. |
 | **Push** (`⇧⌘P`) | Publica la rama actual. Si no tiene upstream, lo crea (`-u`). El número indica cuántos commits vas adelante. La flechita ▾ ofrece `--force-with-lease` y push de todos los tags. |
 
 ---
@@ -138,6 +139,8 @@ En la barra izquierda (clic derecho sobre una rama):
 ---
 
 ## 8. Conflictos
+
+**Tus cambios locales nunca se descartan solos.** Merge, pull, rebase y cambio de rama primero se intentan tal cual (git conserva tus cambios si no chocan). Si git se niega porque un archivo que tocaste también cambia en la operación, GitPilot **no hace nada** y te pregunta: *"Guardar, continuar y restaurar"* guarda tus cambios en un stash, hace la operación y los vuelve a aplicar. Si al reaplicarlos chocan, siguen a salvo en **Stashes** (panel izquierdo) y te avisa. Mientras un merge con conflictos está en curso tras un auto-stash, tus cambios quedan guardados y **vuelven solos al completar o abortar** el merge (lo indica el formulario).
 
 Cuando un merge / rebase / cherry-pick / revert / pull / stash genera conflictos:
 
@@ -215,7 +218,8 @@ Botón **Consola**:
 | SSH falla sin mensaje claro con llave que tiene passphrase | GitPilot no puede pedir la passphrase. Cárgala en el agente: `ssh-add --apple-use-keychain ~/.ssh/tu_llave`. |
 | **"Authentication failed"** por HTTPS | Token vencido o sin permisos (necesita acceso de repositorio). Edítalo en *Perfiles*. El *usuario* debe ser el correcto (en Azure DevOps puede ser cualquiera). |
 | El commit sale con el correo equivocado | Mira *Commit como…* antes de confirmar. Cambia el perfil del repo con el chip. Los commits ya hechos no se modifican (usa *Enmendar último* si es el más reciente y no lo publicaste). |
-| "Tus cambios locales se sobrescribirían" al cambiar de rama | Haz commit o **Stash** primero. |
+| "Tus cambios locales se sobrescribirían" al cambiar de rama o hacer merge/pull | GitPilot te ofrece guardarlos en stash y restaurarlos. Nada se pierde; si al restaurar chocan, están en *Stashes*. |
+| "Creo que se me borraron cambios" tras un merge | Revisa el panel **Stashes**: si hubo auto-stash, ahí están (`git stash list` también). Durante un merge con conflictos se restauran al completarlo o abortarlo. |
 | El push es rechazado (*non-fast-forward*) | Alguien subió antes. Haz **Pull** (merge o rebase) y vuelve a hacer Push. Solo usa *force-with-lease* si sabes que reescribiste tu propia rama. |
 | macOS dice que la app está dañada / no se puede abrir | `xattr -cr /Applications/GitPilot.app` (ver sección 1). |
 | "No se encontró el ejecutable git" | Instala git con `xcode-select --install` o indica la ruta en *Ajustes*. |

@@ -106,6 +106,7 @@ Fábrica `createGit({getAuthEnv, getSettings})`. Cada función recibe `repo` pri
 
 Decisiones relevantes:
 - `merge/rebase/cherryPick/revert/pull/stashApply/stashPop` usan `allowFail` y `mergeResult()`: si el código de salida ≠ 0 **y** hay conflictos en `status`, devuelven `{ok:false, conflicts:n}` (no es un error, la UI abre el resolvedor); si no hay conflictos, lanzan el error real.
+- **Protección de cambios locales**: `mergeResult()` clasifica el fallo de git con `DIRTY_RE` ("would be overwritten", "unstaged changes"…, excluyendo archivos sin seguimiento) y devuelve `{ok:false, dirty:true}` sin haber tocado nada. `merge/rebase/pull` aceptan `{autostash:true}` (usa `--autostash` nativo de git ≥ 2.27); `checkout` lanza un error con `dirty=true` (serializado por IPC/puente) y con `{autostash:true}` hace `stash push -u` → checkout → `stash pop`, conservando el stash si el pop choca. `status.autostash` refleja `.git/MERGE_AUTOSTASH`. La UI (`withStash` en `RepoView.jsx`) pregunta y reintenta con autostash; nunca hay autostash por defecto.
 - `repoState()` detecta operaciones en curso mirando `MERGE_HEAD`, `rebase-merge|rebase-apply`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` en `git rev-parse --absolute-git-dir` (funciona con worktrees y submódulos).
 - `opContinue/opAbort/opSkip` eligen el subcomando según `repoState()`.
 - `unstage` en repos sin commits usa `git rm --cached` (donde `reset` no aplica).
@@ -167,7 +168,7 @@ Render: **virtualizado por ventana** (solo se montan las filas visibles ± 8) co
 ## 7. Pruebas
 
 `npm test` ejecuta:
-- **`backend.test.js`** (19 pruebas) sobre repos reales temporales: init/commit, stage/unstage/discard, hunks y líneas, ramas y merge, conflictos (resolver, abortar, `theirs`), cherry-pick/revert/reset, rebase, stash, tags, remotos (push -u, fetch, pull ff-only/rebase, borrar rama remota, checkout de remota), amend/blame/historial/búsqueda, Gitflow completo (feature, release+tag, hotfix, finish con conflicto reanudable), perfiles (identidad por repo sin tocar la global, secretos, askpass), clone con progreso, consola y errores.
+- **`backend.test.js`** (26 pruebas, incluye la protección de cambios locales: merge sin/con choque, abortar con cambios locales, autostash con conflicto, rebase y checkout) sobre repos reales temporales: init/commit, stage/unstage/discard, hunks y líneas, ramas y merge, conflictos (resolver, abortar, `theirs`), cherry-pick/revert/reset, rebase, stash, tags, remotos (push -u, fetch, pull ff-only/rebase, borrar rama remota, checkout de remota), amend/blame/historial/búsqueda, Gitflow completo (feature, release+tag, hotfix, finish con conflicto reanudable), perfiles (identidad por repo sin tocar la global, secretos, askpass), clone con progreso, consola y errores.
 - **`graph.test.mjs`**: asignación de carriles (lineal, merge, convergencia).
 - **`auth.test.js`**: servidor HTTP que responde 401 y comprueba que git reintenta con `Authorization: Basic user:token` del perfil (con HOME con espacios).
 

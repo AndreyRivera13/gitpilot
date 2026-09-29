@@ -101,7 +101,7 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
   }, [selected && selected.sha, selected && selected.type, path]);
 
   /* ---------------------------- acciones ----------------------------- */
-  const run = useCallback(async (label, fn, { okMsg, noReload } = {}) => {
+  const run = useCallback(async (label, fn, { okMsg, noReload, wip } = {}) => {
     busyRef.current = true;
     setBusy(label);
     let res;
@@ -111,13 +111,42 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
     } catch (e) { ui.error(e); res = undefined; }
     busyRef.current = false;
     setBusy(null);
-    if (!noReload) { const r = await load(limit, showAll); if (r && r.status.conflicts.length && res && res.ok === false) setModal({ name: 'conflicts' }); }
+    if (!noReload) {
+      const r = await load(limit, showAll);
+      if (r && r.status.conflicts.length && res && res.ok === false && res.conflicts) setModal({ name: 'conflicts' });
+      // tras merge/pull/rebase/etc. lleva al usuario a "Cambios locales" para que pueda hacer commit
+      const st = r && r.status;
+      if (st && (st.state || (wip && (st.staged.length || st.unstaged.length || st.conflicts.length)))) setSelected({ type: 'wip' });
+    }
     return res;
   }, [load, limit, showAll, ui]);
 
   const handleMerge = (res, okMsg) => {
-    if (res && res.ok === false && res.conflicts) ui.warn(`Hay ${res.conflicts} archivo(s) con conflictos. Resuélvelos para continuar.`);
-    else if (res && res.ok) ui.success(okMsg);
+    if (!res || res.cancelled) return;
+    if (res.ok === false && res.conflicts) {
+      ui.warn(`Hay ${res.conflicts} archivo(s) con conflictos. Resuélvelos para continuar.${res.stashed ? '\nTus cambios locales están guardados a salvo y se restaurarán al completar o abortar.' : ''}`);
+    } else if (res.ok && res.autostashConflict) {
+      ui.warn('Operación completada, pero tus cambios locales chocan con el resultado. Siguen guardados en Stashes (panel izquierdo): aplícalos desde ahí.');
+    } else if (res.ok) ui.success(okMsg);
+  };
+
+  // Si git se niega porque hay cambios locales que chocan, pregunta y reintenta guardándolos temporalmente (stash).
+  const askStash = async (what, detail) => ui.confirm({
+    title: 'Tienes cambios locales que chocan',
+    message: `Git no puede ${what} sin tocar tus cambios sin commit.\n\n${(detail || '').split('\n').slice(0, 6).join('\n')}\n\n¿Guardarlos temporalmente (stash), continuar y restaurarlos después? No se pierde nada.`,
+    confirmText: 'Guardar, continuar y restaurar',
+  });
+  const withStash = async (what, exec) => {
+    let r;
+    try { r = await exec(false); } catch (e) {
+      if (!e.dirty) throw e;
+      r = { ok: false, dirty: true, message: e.message };
+    }
+    if (r && r.dirty) {
+      if (!(await askStash(what, r.message))) return { ok: false, cancelled: true };
+      r = await exec(true);
+    }
+    return r;
   };
 
   const cur = data && data.status.branch;
@@ -126,10 +155,10 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
   const A = {
     fetch: () => run('Fetch…', () => call('git.fetch', path, {}), { okMsg: 'Fetch completado' }),
     pull: (mode) => run('Pull…', async () => {
-      const r = await call('git.pull', path, { mode: mode || settings.pullMode || 'merge', autostash: true });
+      const r = await withStash('hacer pull', (autostash) => call('git.pull', path, { mode: mode || settings.pullMode || 'merge', autostash }));
       handleMerge(r, r.message && /Already up to date/i.test(r.message) ? 'Ya está actualizado' : 'Pull completado');
       return r;
-    }),
+    }, { wip: true }),
     push: async (opts = {}) => {
       if (!curName) return ui.error('Estás en HEAD desasociado: crea o cambia a una rama para hacer push.');
       const remotes = data.refs.remotesList;
@@ -142,12 +171,11 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
       if (opts.force && !(await ui.confirm({ title: 'Push forzado', message: `Vas a reescribir el historial remoto de "${curName}" con --force-with-lease. ¿Continuar?`, confirmText: 'Forzar push', danger: true }))) return;
       return run('Push…', () => call('git.push', path, args), { okMsg: 'Push completado' });
     },
-    checkout: async (b, remote) => {
-      if (data.status.staged.length || data.status.unstaged.some((f) => !f.untracked)) {
-        // git rechazará si hay conflicto; si no, arrastra los cambios. Avisamos en el error.
-      }
-      return run(`Checkout ${b.name}…`, () => call('git.checkout', path, b.name, { remote: !!remote }), { okMsg: `Checkout de ${b.name}` });
-    },
+    checkout: async (b, remote) => run(`Checkout ${b.name}…`, async () => {
+      const r = await withStash('cambiar de rama', (autostash) => call('git.checkout', path, b.name, { remote: !!remote, autostash }));
+      handleMerge(r || { ok: true }, `Checkout de ${b.name}`);
+      return r;
+    }, { wip: true }),
     checkoutDetached: (sha) => run('Checkout…', () => call('git.checkoutDetached', path, sha), { okMsg: 'HEAD desasociado en ' + sha.slice(0, 7) }),
     createBranch: async (from, label) => {
       const v = await ui.form({ title: label || 'Nueva rama', submitText: 'Crear', fields: [
@@ -166,11 +194,19 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
           { value: 'ffonly', label: 'Solo fast-forward (--ff-only)' }] }] });
       if (!v) return;
       const opts = { noFf: v.kind === 'noff', squash: v.kind === 'squash', ffOnly: v.kind === 'ffonly' };
-      return run('Merge…', async () => { const r = await call('git.merge', path, name, opts); handleMerge(r, v.kind === 'squash' ? 'Cambios traídos al área de preparación: haz commit.' : 'Merge completado'); return r; });
+      return run('Merge…', async () => {
+        const r = await withStash('hacer el merge', (autostash) => call('git.merge', path, name, { ...opts, autostash }));
+        handleMerge(r, v.kind === 'squash' ? 'Cambios traídos al área de preparación: haz commit.' : 'Merge completado');
+        return r;
+      }, { wip: true });
     },
     rebase: async (onto) => {
       if (!(await ui.confirm({ title: 'Rebase', message: `Se reaplicarán los commits de "${curName}" encima de "${onto}". Esto reescribe el historial local de la rama.`, confirmText: 'Rebase' }))) return;
-      return run('Rebase…', async () => { const r = await call('git.rebase', path, onto); handleMerge(r, 'Rebase completado'); return r; });
+      return run('Rebase…', async () => {
+        const r = await withStash('hacer el rebase', (autostash) => call('git.rebase', path, onto, { autostash }));
+        handleMerge(r, 'Rebase completado');
+        return r;
+      }, { wip: true });
     },
     deleteBranch: async (b) => {
       if (!(await ui.confirm({ title: 'Eliminar rama', message: `¿Eliminar la rama local "${b.name}"?`, confirmText: 'Eliminar', danger: true }))) return;
@@ -230,7 +266,7 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
         { name: 'keep', label: 'Mantener lo ya preparado (--keep-index)', type: 'checkbox' }] });
       if (v) return run('Stash…', () => call('git.stashPush', path, { message: v.message.trim() || undefined, includeUntracked: v.untracked, keepIndex: v.keep }), { okMsg: 'Cambios guardados en stash' });
     },
-    stashApply: (s, pop) => run('Stash…', async () => { const r = await call(pop ? 'git.stashPop' : 'git.stashApply', path, s.index); handleMerge(r, pop ? 'Stash aplicado y eliminado' : 'Stash aplicado'); return r; }),
+    stashApply: (s, pop) => run('Stash…', async () => { const r = await call(pop ? 'git.stashPop' : 'git.stashApply', path, s.index); handleMerge(r, pop ? 'Stash aplicado y eliminado' : 'Stash aplicado'); return r; }, { wip: true }),
     stashDrop: async (s) => {
       if (await ui.confirm({ title: 'Eliminar stash', message: `¿Eliminar "${s.message}"? No se puede deshacer.`, confirmText: 'Eliminar', danger: true })) return run('…', () => call('git.stashDrop', path, s.index), { okMsg: 'Stash eliminado' });
     },
@@ -238,7 +274,7 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
       const v = await ui.form({ title: 'Rama desde stash', submitText: 'Crear', fields: [{ name: 'name', label: 'Nombre de la rama', required: true, mono: true }] });
       if (v) return run('…', () => call('git.stashBranch', path, s.index, v.name.trim()), { okMsg: 'Rama creada' });
     },
-    cherryPick: (sha) => run('Cherry-pick…', async () => { const r = await call('git.cherryPick', path, [sha], {}); handleMerge(r, 'Cherry-pick aplicado'); return r; }),
+    cherryPick: (sha) => run('Cherry-pick…', async () => { const r = await call('git.cherryPick', path, [sha], {}); handleMerge(r, 'Cherry-pick aplicado'); return r; }, { wip: true }),
     revert: async (c) => {
       let mainline;
       if (c.parents && c.parents.length > 1) {
@@ -267,17 +303,21 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
       setDiff(null);
       return run('', () => call('git.discardAll', path));
     },
-    commit: async ({ message, body, amend, noVerify, push }) => {
+    commit: async ({ message, body, amend, noVerify, push, stageAll }) => {
+      let errMsg = 'No se pudo crear el commit.';
       const r = await run('Commit…', async () => {
-        await call('git.commit', path, { message, body, amend, noVerify });
+        try {
+          if (stageAll) await call('git.stageAll', path);
+          await call('git.commit', path, { message, body, amend, noVerify });
+        } catch (e) { errMsg = e.message; throw e; }
         return { done: true };
       }, { okMsg: amend ? 'Commit enmendado' : 'Commit creado' });
-      if (!r) return false;
+      if (!r) return { ok: false, error: errMsg };
       if (push) await A.push({ force: amend ? 'lease' : false });
       setDiff(null);
-      return true;
+      return { ok: true };
     },
-    opContinue: () => run('Continuando…', async () => { const r = await call('git.opContinue', path); handleMerge(r, 'Operación completada'); return r; }),
+    opContinue: () => run('Continuando…', async () => { const r = await call('git.opContinue', path); handleMerge(r, 'Operación completada'); return r; }, { wip: true }),
     opAbort: async () => {
       if (await ui.confirm({ title: 'Abortar operación', message: 'Se descartará el progreso de la operación en curso y se volverá al estado anterior.', confirmText: 'Abortar', danger: true })) {
         setModal(null); return run('Abortando…', () => call('git.opAbort', path), { okMsg: 'Operación abortada' });
@@ -481,6 +521,7 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
         <button className="icon-btn" style={{ marginLeft: -6, marginRight: 4 }} title="Más opciones de push" onClick={(e) => ui.menuAt(e.currentTarget, [
           { label: 'Push --force-with-lease', danger: true, onClick: () => A.push({ force: 'lease' }) }, { label: 'Push de todos los tags', onClick: () => A.push({ tags: true }) }])}>▾</button>
         <div className="tool-sep" />
+        <button className={`tool ${selected && selected.type === 'wip' ? 'active' : ''}`} onClick={() => { setDiff(null); setSelected({ type: 'wip' }); }} title="Ir a Cambios locales para hacer commit"><span className="ico">✔</span><span className="lbl">Commit</span>{changeCount > 0 && <span className="badge">{changeCount}</span>}</button>
         <button className="tool" onClick={() => A.createBranch()}><span className="ico">⑂</span><span className="lbl">Rama</span></button>
         <button className="tool" onClick={A.stashSave} disabled={!changeCount}><span className="ico">📦</span><span className="lbl">Stash</span></button>
         <button className="tool" onClick={() => A.createTag()}><span className="ico">🏷</span><span className="lbl">Tag</span></button>
@@ -559,7 +600,7 @@ export default function RepoView({ path, app, reloadApp, logs, menuAction, openP
             <WorkingCopy repo={path} status={status} identity={idn} profile={profile} selected={diff && diff.kind === 'wip' ? diff : null}
               onOpenFile={setDiff} actions={A} onFileMenu={fileMenu} onOpenConflicts={() => setModal({ name: 'conflicts' })} onSwitchProfile={profileMenu} />
           ) : (
-            <CommitDetail detail={detail} loading={detailLoading} selectedFile={selectedFileForPane} onOpenFile={setDiff} onSelectSha={selectSha} onFileMenu={commitFileMenu} ui={ui} />
+            <CommitDetail changeCount={changeCount} onGoWip={() => { setDiff(null); setSelected({ type: 'wip' }); }} detail={detail} loading={detailLoading} selectedFile={selectedFileForPane} onOpenFile={setDiff} onSelectSha={selectSha} onFileMenu={commitFileMenu} ui={ui} />
           )}
         </div>
       </div>

@@ -20,7 +20,7 @@ function connectWs() {
       const p = pending.get(msg.id);
       if (!p) return;
       pending.delete(msg.id);
-      msg.ok ? p.resolve(msg.data) : p.reject(new Error(msg.error));
+      msg.ok ? p.resolve(msg.data) : p.reject(Object.assign(new Error(msg.error), { dirty: !!msg.dirty }));
     };
     ws.onclose = () => { openPromise = null; };
   });
@@ -30,7 +30,7 @@ function connectWs() {
 export async function call(method, ...args) {
   if (electron) {
     const r = await electron.call(method, args);
-    if (!r.ok) throw new Error(r.error);
+    if (!r.ok) throw Object.assign(new Error(r.error), { dirty: !!r.dirty });
     return r.data;
   }
   await connectWs();

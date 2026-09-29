@@ -1,9 +1,15 @@
 import React from 'react';
 import { STATUS, baseName, dirName, fmtDate, hashColor, initials, copyText } from '../lib/util.js';
 
-export default function CommitDetail({ detail, loading, selectedFile, onOpenFile, onSelectSha, onFileMenu, ui }) {
+export default function CommitDetail({ changeCount, onGoWip, detail, loading, selectedFile, onOpenFile, onSelectSha, onFileMenu, ui }) {
+  const wipBanner = changeCount > 0 ? (
+    <div className="banner" style={{ margin: 8 }}>
+      <b>Tienes {changeCount} cambio{changeCount > 1 ? 's' : ''} locales sin commit</b>
+      <div className="row"><button className="btn primary sm" onClick={onGoWip}>Ir a Cambios locales y hacer commit</button></div>
+    </div>
+  ) : null;
   if (loading && !detail) return <div className="empty-state">Cargando…</div>;
-  if (!detail) return <div className="empty-state">Selecciona un commit</div>;
+  if (!detail) return <div className="empty-state">Selecciona un commit{wipBanner}</div>;
   const d = detail;
   const [subject, ...rest] = d.message.split('\n');
   const body = rest.join('\n').trim();
@@ -15,6 +21,7 @@ export default function CommitDetail({ detail, loading, selectedFile, onOpenFile
         <span className="avatar" style={{ background: hashColor(d.email) }}>{initials(d.author)}</span>
         <div className="grow ellipsis"><div>{d.author}</div><div className="muted" style={{ fontWeight: 400, fontSize: 11.5 }}>{fmtDate(d.date)}</div></div>
       </div>
+      {wipBanner}
       <div className="pane-scroll selectable">
         <div className="commit-msg"><div className="s">{subject}</div>{body}</div>
         <dl className="commit-meta">

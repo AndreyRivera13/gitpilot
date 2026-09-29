@@ -458,6 +458,101 @@ const read = (r, f) => fs.readFileSync(path.join(r, f), 'utf8');
     } finally { process.env.HOME = oldHome; }
   });
 
+  console.log('Cambios locales protegidos');
+  const mkDirty = async (name) => {
+    const r = path.join(tmp, name);
+    await api['repo.init'](r, { initialBranch: 'main' });
+    await run(['config', 'user.name', 'T'], { cwd: r, silent: true });
+    await run(['config', 'user.email', 't@t.co'], { cwd: r, silent: true });
+    write(r, 'f.txt', 'a\nb\nc\n'); write(r, 'g.txt', 'x\n');
+    await api['git.stageAll'](r); await api['git.commit'](r, { message: 'base' });
+    await api['git.createBranch'](r, 'feat', {});
+    write(r, 'f.txt', 'a\nB-feat\nc\n'); await api['git.stageAll'](r); await api['git.commit'](r, { message: 'feat' });
+    await api['git.checkout'](r, 'main');
+    return r;
+  };
+  await t('merge con cambios locales que NO chocan: se conservan', async () => {
+    const r = await mkDirty('d1');
+    write(r, 'g.txt', 'x\nLOCAL\n'); write(r, 'nuevo.txt', 'sin seguimiento');
+    const m = await api['git.merge'](r, 'feat', { noFf: true, message: 'm' });
+    assert.strictEqual(m.ok, true);
+    assert.strictEqual(read(r, 'g.txt'), 'x\nLOCAL\n');
+    assert.strictEqual(read(r, 'nuevo.txt'), 'sin seguimiento');
+    assert.strictEqual(read(r, 'f.txt'), 'a\nB-feat\nc\n');
+  });
+  await t('merge con cambios locales que chocan: avisa (dirty), no toca nada y reintenta con autostash', async () => {
+    const r = await mkDirty('d2');
+    write(r, 'f.txt', 'a\nLOCAL\nc\n');
+    const m = await api['git.merge'](r, 'feat', { noFf: true, message: 'm' });
+    assert.strictEqual(m.ok, false); assert.strictEqual(m.dirty, true);
+    assert.strictEqual(read(r, 'f.txt'), 'a\nLOCAL\nc\n');           // intacto
+    const m2 = await api['git.merge'](r, 'feat', { noFf: true, message: 'm', autostash: true });
+    // el merge se hace y al restaurar chocan: nada se pierde (queda en el stash o con marcadores)
+    const stashes = await api['git.refs'](r).then((x) => x.stashes.length);
+    const txt = read(r, 'f.txt');
+    assert.ok(m2.autostashConflict || stashes > 0 || /LOCAL/.test(txt), 'los cambios locales no deben desaparecer');
+    assert.ok(stashes > 0 || /LOCAL/.test(txt));
+  });
+  await t('merge con conflicto real + cambios locales: abortar restaura lo local', async () => {
+    const r = await mkDirty('d3');
+    write(r, 'f.txt', 'a\nB-main\nc\n'); await api['git.stageAll'](r); await api['git.commit'](r, { message: 'main change' });
+    write(r, 'g.txt', 'x\nLOCAL\n'); write(r, 'u.txt', 'untracked');
+    const m = await api['git.merge'](r, 'feat', { noFf: true, message: 'm' });
+    assert.strictEqual(m.ok, false); assert.ok(m.conflicts >= 1);
+    assert.strictEqual(read(r, 'g.txt'), 'x\nLOCAL\n');                // git lo mantiene en su sitio
+    await api['git.opAbort'](r);
+    assert.strictEqual(read(r, 'g.txt'), 'x\nLOCAL\n');
+    assert.strictEqual(read(r, 'u.txt'), 'untracked');
+    assert.strictEqual(read(r, 'f.txt'), 'a\nB-main\nc\n');
+  });
+  await t('merge con autostash + conflicto: status.autostash y se restaura al completar', async () => {
+    const r = await mkDirty('d4');
+    write(r, 'f.txt', 'a\nB-main\nc\n'); await api['git.stageAll'](r); await api['git.commit'](r, { message: 'main change' });
+    write(r, 'g.txt', 'x\nLOCAL\n');
+    const m = await api['git.merge'](r, 'feat', { noFf: true, message: 'm', autostash: true });
+    assert.strictEqual(m.ok, false);
+    let st = await api['git.status'](r);
+    assert.strictEqual(st.autostash, true);
+    write(r, 'f.txt', 'a\nRES\nc\n'); await api['git.stage'](r, ['f.txt']);
+    await api['git.commit'](r, { message: 'merge resuelto' });
+    assert.strictEqual(read(r, 'g.txt'), 'x\nLOCAL\n');
+    st = await api['git.status'](r);
+    assert.strictEqual(st.autostash, false);
+    assert.strictEqual((await api['git.refs'](r)).stashes.length, 0);
+  });
+  await t('rebase con cambios sin preparar: dirty → autostash lo conserva', async () => {
+    const r = await mkDirty('d5');
+    await api['git.checkout'](r, 'feat');
+    write(r, 'g.txt', 'x\nLOCAL\n');
+    const a = await api['git.rebase'](r, 'main');
+    if (a.dirty) {
+      const b = await api['git.rebase'](r, 'main', { autostash: true });
+      assert.strictEqual(b.ok, true);
+    }
+    assert.strictEqual(read(r, 'g.txt'), 'x\nLOCAL\n');
+  });
+  await t('checkout que choca con cambios locales: dirty, luego autostash lo restaura', async () => {
+    const r = await mkDirty('d6');
+    write(r, 'f.txt', 'a\nLOCAL\nc\n');
+    let err;
+    try { await api['git.checkout'](r, 'feat'); } catch (e) { err = e; }
+    assert.ok(err && err.dirty, 'debe marcar dirty');
+    assert.strictEqual(read(r, 'f.txt'), 'a\nLOCAL\nc\n');
+    const res = await api['git.checkout'](r, 'feat', { autostash: true });
+    assert.strictEqual(res.ok, true);
+    const st = await api['git.status'](r);
+    assert.strictEqual(st.branch.head, 'feat');
+    const stashes = (await api['git.refs'](r)).stashes.length;
+    assert.ok(res.autostashConflict ? stashes > 0 : /LOCAL/.test(read(r, 'f.txt')));
+  });
+  await t('commit con identidad del repo, sin preparar nada falla con mensaje claro', async () => {
+    const r = await mkDirty('d7');
+    await assert.rejects(api['git.commit'](r, { message: 'nada' }), /nothing|nada|no changes/i);
+    write(r, 'g.txt', 'y\n'); await api['git.stageAll'](r);
+    const sha = await api['git.commit'](r, { message: 'ok', body: 'cuerpo' });
+    assert.ok(/^[0-9a-f]{40}$/.test(sha));
+  });
+
   console.log('Otros');
   await t('clone con progreso, submódulos, consola, config', async () => {
     const dest = path.join(tmp, 'clonado');

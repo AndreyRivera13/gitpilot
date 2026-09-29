@@ -94,7 +94,7 @@ app.whenReady().then(() => {
     try {
       return { ok: true, data: await fn(...(args || [])) };
     } catch (e) {
-      return { ok: false, error: e && e.message ? e.message : String(e) };
+      return { ok: false, error: e && e.message ? e.message : String(e), dirty: !!(e && e.dirty) };
     }
   });
 
